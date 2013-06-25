@@ -132,6 +132,11 @@ def main():
                            'at www.cdec-decoder.org for more information')
   args = parser.parse_args()
 
+  if not os.path.exists(args.config):
+    raise IOError("Cannot read config file {}".format(args.config))
+  if not os.path.exists(args.devset):
+    raise IOError("Devset {} does not exist".format(args.devset))
+
   args.metric = args.metric.upper()
 
   if not args.update_size:
