@@ -30,7 +30,6 @@
 #include "sparse_vector.h"
 
 using namespace std;
-using boost::shared_ptr;
 namespace po = boost::program_options;
 
 bool invert_score;
@@ -48,13 +47,7 @@ int hope_select;
 bool pseudo_doc;
 bool sent_approx;
 bool checkloss;
-
-void SanityCheck(const vector<double>& w) {
-  for (int i = 0; i < w.size(); ++i) {
-    assert(!isnan(w[i]));
-    assert(!isinf(w[i]));
-  }
-}
+bool stream;
 
 struct FComp {
   const vector<double>& w_;
@@ -99,6 +92,7 @@ bool InitCommandLine(int argc, char** argv, po::variables_map* conf) {
     ("k_best_size,k", po::value<int>()->default_value(250), "Size of hypothesis list to search for oracles")
     ("update_k_best,b", po::value<int>()->default_value(1), "Size of good, bad lists to perform update with")
     ("unique_k_best,u", "Unique k-best translation list")
+    ("stream,t", "Stream mode (used for realtime)")
     ("weights_output,O",po::value<string>(),"Directory to write weights to")
     ("output_dir,D",po::value<string>(),"Directory to place output in")
     ("decoder_config,c",po::value<string>(),"Decoder configuration file");
@@ -117,7 +111,11 @@ bool InitCommandLine(int argc, char** argv, po::variables_map* conf) {
   }
   po::notify(*conf);
 
-  if (conf->count("help") || !conf->count("input_weights") || !conf->count("decoder_config") || !conf->count("reference")) {
+  if (conf->count("help")
+          || !conf->count("input_weights")
+          || !conf->count("decoder_config")
+          || (!conf->count("stream") && (!conf->count("reference") || !conf->count("weights_output") || !conf->count("output_dir")))
+          ) {
     cerr << dcmdline_options << endl;
     return false;
   }
@@ -143,7 +141,7 @@ struct HypothesisInfo {
   double alpha;
   double oracle_loss;
   SparseVector<double> oracle_feat_diff;
-  shared_ptr<HypothesisInfo> oracleN;
+  boost::shared_ptr<HypothesisInfo> oracleN;
 };
 
 bool ApproxEqual(double a, double b) {
@@ -151,7 +149,7 @@ bool ApproxEqual(double a, double b) {
   return (fabs(a-b)/fabs(b)) < EPSILON;
 }
 
-typedef shared_ptr<HypothesisInfo> HI;
+typedef boost::shared_ptr<HypothesisInfo> HI;
 bool HypothesisCompareB(const HI& h1, const HI& h2 ) 
 {
   return h1->mt_metric > h2->mt_metric;
@@ -179,11 +177,11 @@ bool HypothesisCompareG(const HI& h1, const HI& h2 )
 };
 
 
-void CuttingPlane(vector<shared_ptr<HypothesisInfo> >* cur_c, bool* again, vector<shared_ptr<HypothesisInfo> >& all_hyp, vector<weight_t> dense_weights)
+void CuttingPlane(vector<boost::shared_ptr<HypothesisInfo> >* cur_c, bool* again, vector<boost::shared_ptr<HypothesisInfo> >& all_hyp, vector<weight_t> dense_weights)
 {
   bool DEBUG_CUT = false;
-  shared_ptr<HypothesisInfo> max_fear, max_fear_in_set;
-  vector<shared_ptr<HypothesisInfo> >& cur_constraint = *cur_c;
+  boost::shared_ptr<HypothesisInfo> max_fear, max_fear_in_set;
+  vector<boost::shared_ptr<HypothesisInfo> >& cur_constraint = *cur_c;
 
   if(no_reweight)
     {
@@ -229,9 +227,9 @@ void CuttingPlane(vector<shared_ptr<HypothesisInfo> >* cur_c, bool* again, vecto
 }
 
 
-double ComputeDelta(vector<shared_ptr<HypothesisInfo> >* cur_p, double max_step_size,vector<weight_t> dense_weights )
+double ComputeDelta(vector<boost::shared_ptr<HypothesisInfo> >* cur_p, double max_step_size,vector<weight_t> dense_weights )
 {
-  vector<shared_ptr<HypothesisInfo> >& cur_pair = *cur_p;
+  vector<boost::shared_ptr<HypothesisInfo> >& cur_pair = *cur_p;
    double loss = cur_pair[0]->oracle_loss - cur_pair[1]->oracle_loss;
 
    double margin = -(cur_pair[0]->oracleN->features.dot(dense_weights)- cur_pair[0]->features.dot(dense_weights)) + (cur_pair[1]->oracleN->features.dot(dense_weights) - cur_pair[1]->features.dot(dense_weights));
@@ -255,12 +253,12 @@ double ComputeDelta(vector<shared_ptr<HypothesisInfo> >* cur_p, double max_step_
 }
 
 
-vector<shared_ptr<HypothesisInfo> > SelectPair(vector<shared_ptr<HypothesisInfo> >* cur_c)
+vector<boost::shared_ptr<HypothesisInfo> > SelectPair(vector<boost::shared_ptr<HypothesisInfo> >* cur_c)
 {
   bool DEBUG_SELECT= false;
-  vector<shared_ptr<HypothesisInfo> >& cur_constraint = *cur_c;
+  vector<boost::shared_ptr<HypothesisInfo> >& cur_constraint = *cur_c;
   
-  vector<shared_ptr<HypothesisInfo> > pair;
+  vector<boost::shared_ptr<HypothesisInfo> > pair;
 
   if (no_select || optimizer == 2){ //skip heuristic search and return oracle and fear for pa-mira
 
@@ -272,7 +270,7 @@ vector<shared_ptr<HypothesisInfo> > SelectPair(vector<shared_ptr<HypothesisInfo>
   
   for(int u=0;u != cur_constraint.size();u++)	
     {
-      shared_ptr<HypothesisInfo> max_fear;
+      boost::shared_ptr<HypothesisInfo> max_fear;
       
       if(DEBUG_SELECT) cerr<< "cur alpha " << u  << " " << cur_constraint[u]->alpha;
       for(int i=0; i < cur_constraint.size();i++) //select maximal violator
@@ -317,8 +315,27 @@ vector<shared_ptr<HypothesisInfo> > SelectPair(vector<shared_ptr<HypothesisInfo>
 }
 
 struct GoodBadOracle {
-  vector<shared_ptr<HypothesisInfo> > good;
-  vector<shared_ptr<HypothesisInfo> > bad;
+  vector<boost::shared_ptr<HypothesisInfo> > good;
+  vector<boost::shared_ptr<HypothesisInfo> > bad;
+};
+
+struct BasicObserver: public DecoderObserver {
+    Hypergraph* hypergraph;
+    BasicObserver() : hypergraph(NULL) {}
+    ~BasicObserver() {
+        if(hypergraph != NULL) delete hypergraph;
+    }
+    void NotifyDecodingStart(const SentenceMetadata& smeta) {}
+    void NotifySourceParseFailure(const SentenceMetadata& smeta) {}
+    void NotifyTranslationForest(const SentenceMetadata& smeta, Hypergraph* hg) {
+        if(hypergraph != NULL) delete hypergraph;
+        hypergraph = new Hypergraph(*hg);
+    }
+    void NotifyAlignmentFailure(const SentenceMetadata& semta) {
+        if(hypergraph != NULL) delete hypergraph;
+    }
+    void NotifyAlignmentForest(const SentenceMetadata& smeta, Hypergraph* hg) {}
+    void NotifyDecodingComplete(const SentenceMetadata& smeta) {}
 };
 
 struct TrainingObserver : public DecoderObserver {
@@ -342,8 +359,8 @@ struct TrainingObserver : public DecoderObserver {
   const DocScorer& ds;
   vector<ScoreP>& corpus_bleu_sent_stats;
   vector<GoodBadOracle>& oracles;
-  vector<shared_ptr<HypothesisInfo> > cur_best;
-  shared_ptr<HypothesisInfo> cur_oracle;
+  vector<boost::shared_ptr<HypothesisInfo> > cur_best;
+  boost::shared_ptr<HypothesisInfo> cur_oracle;
   const int kbest_size;
   Hypergraph forest;
   int cur_sent;
@@ -361,7 +378,7 @@ struct TrainingObserver : public DecoderObserver {
     return *cur_best[0];
   }
 
-  const vector<shared_ptr<HypothesisInfo> > GetCurrentBest() const {
+  const vector<boost::shared_ptr<HypothesisInfo> > GetCurrentBest() const {
     return cur_best;
   }
   
@@ -375,7 +392,7 @@ struct TrainingObserver : public DecoderObserver {
   
 
   virtual void NotifyTranslationForest(const SentenceMetadata& smeta, Hypergraph* hg) {
-    cur_sent = smeta.GetSentenceID();
+    cur_sent = stream ? 0 : smeta.GetSentenceID();
     curr_src_length = (float) smeta.GetSourceLength();
 
     if(unique_kbest)
@@ -386,8 +403,8 @@ struct TrainingObserver : public DecoderObserver {
     
   }
 
-  shared_ptr<HypothesisInfo> MakeHypothesisInfo(const SparseVector<double>& feats, const double score, const vector<WordID>& hyp) {
-    shared_ptr<HypothesisInfo> h(new HypothesisInfo);
+  boost::shared_ptr<HypothesisInfo> MakeHypothesisInfo(const SparseVector<double>& feats, const double score, const vector<WordID>& hyp) {
+    boost::shared_ptr<HypothesisInfo> h(new HypothesisInfo);
     h->features = feats;
     h->mt_metric = score;
     h->hyp = hyp;
@@ -397,15 +414,16 @@ struct TrainingObserver : public DecoderObserver {
   template <class Filter>  
   void UpdateOracles(int sent_id, const Hypergraph& forest) {
 
-    bool PRINT_LIST= false;    
-    vector<shared_ptr<HypothesisInfo> >& cur_good = oracles[sent_id].good;
-    vector<shared_ptr<HypothesisInfo> >& cur_bad = oracles[sent_id].bad;
+	if (stream) sent_id = 0;
+    bool PRINT_LIST= false;
+    vector<boost::shared_ptr<HypothesisInfo> >& cur_good = oracles[sent_id].good;
+    vector<boost::shared_ptr<HypothesisInfo> >& cur_bad = oracles[sent_id].bad;
     //TODO: look at keeping previous iterations hypothesis lists around
     cur_best.clear();
     cur_good.clear();
     cur_bad.clear();
 
-    vector<shared_ptr<HypothesisInfo> > all_hyp;
+    vector<boost::shared_ptr<HypothesisInfo> > all_hyp;
 
     typedef KBest::KBestDerivations<vector<WordID>, ESentenceTraversal,Filter> K;
     K kbest(forest,kbest_size);
@@ -501,7 +519,7 @@ struct TrainingObserver : public DecoderObserver {
     if(PRINT_LIST) { cerr << "GOOD" << endl;  for(int u=0;u!=cur_good.size();u++) cerr << cur_good[u]->mt_metric << " " << cur_good[u]->hope << endl;}     
 
     //use hope for fear selection
-    shared_ptr<HypothesisInfo>& oracleN = cur_good[0];
+    boost::shared_ptr<HypothesisInfo>& oracleN = cur_good[0];
 
     if(fear_select == 1){   //compute fear hyps with model - bleu
       if (PRINT_LIST) cerr << "FEAR " << endl;
@@ -619,14 +637,15 @@ int main(int argc, char** argv) {
   no_select = conf.count("no_select");
   update_list_size = conf["update_k_best"].as<int>();
   unique_kbest = conf.count("unique_k_best");
+  stream = conf.count("stream");
   pseudo_doc = conf.count("pseudo_doc");
   sent_approx = conf.count("sent_approx");
   cerr << "Using pseudo-doc:" << pseudo_doc << " Sent:" << sent_approx << endl;
   if(pseudo_doc)
     mt_metric_scale=1;
 
-  const string weights_dir = conf["weights_output"].as<string>();
-  const string output_dir = conf["output_dir"].as<string>();
+  const string weights_dir = stream ? "-" : conf["weights_output"].as<string>();
+  const string output_dir = stream ? "-" : conf["output_dir"].as<string>();
   ScoreType type = ScoreTypeFromString(metric_name);
 
   //establish metric used for tuning
@@ -636,16 +655,22 @@ int main(int argc, char** argv) {
     invert_score = false;
   }
 
-  //load references
-  DocScorer ds(type, conf["reference"].as<vector<string> >(), "");
-  cerr << "Loaded " << ds.size() << " references for scoring with " << metric_name << endl;
+  boost::shared_ptr<DocScorer> ds;
+  //normal: load references, stream: start stream scorer
+  if (stream) {
+	  ds = boost::shared_ptr<DocScorer>(new DocStreamScorer(type, vector<string>(0), ""));
+	  cerr << "Scoring doc stream with " << metric_name << endl;
+  } else {
+      ds = boost::shared_ptr<DocScorer>(new DocScorer(type, conf["reference"].as<vector<string> >(), ""));
+      cerr << "Loaded " << ds->size() << " references for scoring with " << metric_name << endl;
+  }
   vector<ScoreP> corpus_bleu_sent_stats;
   
   //check training pass,if >0, then use previous iterations corpus bleu stats
-  cur_pass = conf["pass"].as<int>();
+  cur_pass = stream ? 0 : conf["pass"].as<int>();
   if(cur_pass > 0)
     {
-      ReadPastTranslationForScore(cur_pass, &corpus_bleu_sent_stats, ds, output_dir);
+      ReadPastTranslationForScore(cur_pass, &corpus_bleu_sent_stats, *ds, output_dir);
     }
   
   cerr << "Using optimizer:" << optimizer << endl;
@@ -659,7 +684,7 @@ int main(int argc, char** argv) {
   Weights::InitFromFile(conf["input_weights"].as<string>(), &dense_weights);
   Weights::InitSparseVector(dense_weights, &lambdas);
 
-  const string input = decoder.GetConf()["input"].as<string>();
+  const string input = stream ? "-" : decoder.GetConf()["input"].as<string>();
   if (!SILENT) cerr << "Reading input from " << ((input == "-") ? "STDIN" : input.c_str()) << endl;
   ReadFile in_read(input);
   istream *in = in_read.stream();
@@ -668,9 +693,10 @@ int main(int argc, char** argv) {
   
   const double max_step_size = conf["max_step_size"].as<double>();
 
-  vector<GoodBadOracle> oracles(ds.size());
+  vector<GoodBadOracle> oracles(ds->size());
 
-  TrainingObserver observer(conf["k_best_size"].as<int>(), ds, &oracles, &corpus_bleu_sent_stats);
+  BasicObserver bobs;
+  TrainingObserver observer(conf["k_best_size"].as<int>(), *ds, &oracles, &corpus_bleu_sent_stats);
 
   int cur_sent = 0;
   int lcount = 0;
@@ -689,34 +715,73 @@ int main(int argc, char** argv) {
   while(*in) {
       getline(*in, buf);
       if (buf.empty()) continue;
+      if (stream) {
+    	  cur_sent = 0;
+    	  int delim = buf.find(" ||| ");
+    	  // Translate only
+    	  if (delim == -1) {
+    		  decoder.SetId(cur_sent);
+    		  decoder.Decode(buf, &bobs);
+    		  vector<WordID> trans;
+    		  ViterbiESentence(bobs.hypergraph[0], &trans);
+    		  cout << TD::GetString(trans) << endl;
+    		  continue;
+          // Special command:
+          // CMD ||| arg1 ||| arg2 ...
+    	  } else {
+              string cmd = buf.substr(0, delim);
+              buf = buf.substr(delim + 5);
+        	  // Translate and update (normal MIRA)
+              // LEARN ||| source ||| reference
+              if (cmd == "LEARN") {
+                  delim = buf.find(" ||| ");
+        		  ds->update(buf.substr(delim + 5));
+        		  buf = buf.substr(0, delim);
+              } else if (cmd == "WEIGHTS") {
+                  // WEIGHTS ||| WRITE
+                  if (buf == "WRITE") {
+                      cout << Weights::GetString(dense_weights) << endl;
+                  // WEIGHTS ||| f1=w1 f2=w2 ...
+                  } else {
+                      Weights::UpdateFromString(buf, dense_weights);
+                  }
+                  continue;
+              } else {
+                  cerr << "Error: cannot parse command, skipping line:" << endl;
+                  cerr << cmd << " ||| " << buf << endl;
+                  continue;
+              }
+    	  }
+      }
+      // Regular mode or LEARN line from stream mode
       //TODO: allow batch updating
       lambdas.init_vector(&dense_weights);
       dense_w_local = dense_weights;
       decoder.SetId(cur_sent);
       decoder.Decode(buf, &observer);  // decode the sentence, calling Notify to get the hope,fear, and model best hyps. 
-      
+
       cur_sent = observer.GetCurrentSent();
       cerr << "SENT: " << cur_sent << endl;
       const HypothesisInfo& cur_hyp = observer.GetCurrentBestHypothesis();
       const HypothesisInfo& cur_good = *oracles[cur_sent].good[0];
       const HypothesisInfo& cur_bad = *oracles[cur_sent].bad[0];
 
-      vector<shared_ptr<HypothesisInfo> >& cur_good_v = oracles[cur_sent].good;
-      vector<shared_ptr<HypothesisInfo> >& cur_bad_v = oracles[cur_sent].bad;
-      vector<shared_ptr<HypothesisInfo> > cur_best_v = observer.GetCurrentBest();
+      vector<boost::shared_ptr<HypothesisInfo> >& cur_good_v = oracles[cur_sent].good;
+      vector<boost::shared_ptr<HypothesisInfo> >& cur_bad_v = oracles[cur_sent].bad;
+      vector<boost::shared_ptr<HypothesisInfo> > cur_best_v = observer.GetCurrentBest();
 
       tot_loss += cur_hyp.mt_metric;
       
       //score hyps to be able to compute corpus level bleu after we finish this iteration through the corpus
-      ScoreP sentscore = ds[cur_sent]->ScoreCandidate(cur_hyp.hyp);
+      ScoreP sentscore = (*ds)[cur_sent]->ScoreCandidate(cur_hyp.hyp);
       if (!acc) { acc = sentscore->GetZero(); }
       acc->PlusEquals(*sentscore);
 
-      ScoreP hope_sentscore = ds[cur_sent]->ScoreCandidate(cur_good.hyp);
+      ScoreP hope_sentscore = (*ds)[cur_sent]->ScoreCandidate(cur_good.hyp);
       if (!acc_h) { acc_h = hope_sentscore->GetZero(); }
       acc_h->PlusEquals(*hope_sentscore);
 
-      ScoreP fear_sentscore = ds[cur_sent]->ScoreCandidate(cur_bad.hyp);
+      ScoreP fear_sentscore = (*ds)[cur_sent]->ScoreCandidate(cur_bad.hyp);
       if (!acc_f) { acc_f = fear_sentscore->GetZero(); }
       acc_f->PlusEquals(*fear_sentscore);
       
@@ -751,13 +816,13 @@ int main(int argc, char** argv) {
 	}
       else if(optimizer == 5) //full mira with n-best list of constraints from hope, fear, model best
 	{
-	  vector<shared_ptr<HypothesisInfo> > cur_constraint;
+	  vector<boost::shared_ptr<HypothesisInfo> > cur_constraint;
 	  cur_constraint.insert(cur_constraint.begin(), cur_bad_v.begin(), cur_bad_v.end());
 	  cur_constraint.insert(cur_constraint.begin(), cur_best_v.begin(), cur_best_v.end());
 	  cur_constraint.insert(cur_constraint.begin(), cur_good_v.begin(), cur_good_v.end());
 
 	  bool optimize_again;
-	  vector<shared_ptr<HypothesisInfo> > cur_pair;
+	  vector<boost::shared_ptr<HypothesisInfo> > cur_pair;
 	  //SMO 
 	  for(int u=0;u!=cur_constraint.size();u++)	
 	    cur_constraint[u]->alpha =0;	      
@@ -806,7 +871,7 @@ int main(int argc, char** argv) {
       else if(optimizer == 2 || optimizer == 3) //PA and Cutting Plane MIRA update
 	  {
 	    bool DEBUG_SMO= true;
-	    vector<shared_ptr<HypothesisInfo> > cur_constraint;
+	    vector<boost::shared_ptr<HypothesisInfo> > cur_constraint;
 	    cur_constraint.push_back(cur_good_v[0]); //add oracle to constraint set
 	    bool optimize_again = true;
 	    int cut_plane_calls = 0;
@@ -846,7 +911,7 @@ int main(int argc, char** argv) {
 		    while (iter < smo_iter)
 		      {			
 			//select pair to optimize from constraint set
-			vector<shared_ptr<HypothesisInfo> > cur_pair = SelectPair(&cur_constraint);
+			vector<boost::shared_ptr<HypothesisInfo> > cur_pair = SelectPair(&cur_constraint);
 			
 			if(cur_pair.empty()){
 			  iter=MAX_SMO; 
@@ -915,11 +980,11 @@ int main(int argc, char** argv) {
 	  }
       
     
-      if ((cur_sent * 40 / ds.size()) > dots) { ++dots; cerr << '.'; }
+      if ((cur_sent * 40 / ds->size()) > dots) { ++dots; cerr << '.'; }
       tot += lambdas;
       ++lcount;
       cur_sent++;
-      
+
       cout << TD::GetString(cur_good_v[0]->hyp) << " ||| " << TD::GetString(cur_best_v[0]->hyp) << " ||| " << TD::GetString(cur_bad_v[0]->hyp) << endl;
 
     }
@@ -929,24 +994,27 @@ int main(int argc, char** argv) {
     cerr << "Translated " << lcount << " sentences " << endl;
     cerr << " [AVG METRIC LAST PASS=" << (tot_loss / lcount) << "]\n";
     tot_loss = 0;
-    
-    int node_id = rng->next() * 100000;
-    cerr << " Writing weights to " << node_id << endl;
-    Weights::ShowLargestFeatures(dense_weights);
-    dots = 0;
-    ostringstream os;
-    os << weights_dir << "/weights.mira-pass" << (cur_pass < 10 ? "0" : "") << cur_pass << "." << node_id << ".gz";
-    string msg = "# MIRA tuned weights ||| " + boost::lexical_cast<std::string>(node_id) + " ||| " + boost::lexical_cast<std::string>(lcount);
-    lambdas.init_vector(&dense_weights);
-    Weights::WriteToFile(os.str(), dense_weights, true, &msg);
 
-    SparseVector<double> x = tot;
-    x /= lcount+1;
-    ostringstream sa;
-    string msga = "# MIRA tuned weights AVERAGED ||| " + boost::lexical_cast<std::string>(node_id) + " ||| " + boost::lexical_cast<std::string>(lcount);
-    sa << weights_dir << "/weights.mira-pass" << (cur_pass < 10 ? "0" : "") << cur_pass << "." << node_id << "-avg.gz";
-    x.init_vector(&dense_weights);
-    Weights::WriteToFile(sa.str(), dense_weights, true, &msga);
+    // Write weights unless streaming
+    if (!stream) {
+		int node_id = rng->next() * 100000;
+		cerr << " Writing weights to " << node_id << endl;
+		Weights::ShowLargestFeatures(dense_weights);
+		dots = 0;
+		ostringstream os;
+		os << weights_dir << "/weights.mira-pass" << (cur_pass < 10 ? "0" : "") << cur_pass << "." << node_id << ".gz";
+		string msg = "# MIRA tuned weights ||| " + boost::lexical_cast<std::string>(node_id) + " ||| " + boost::lexical_cast<std::string>(lcount);
+		lambdas.init_vector(&dense_weights);
+		Weights::WriteToFile(os.str(), dense_weights, true, &msg);
+    
+		SparseVector<double> x = tot;
+		x /= lcount+1;
+		ostringstream sa;
+		string msga = "# MIRA tuned weights AVERAGED ||| " + boost::lexical_cast<std::string>(node_id) + " ||| " + boost::lexical_cast<std::string>(lcount);
+		sa << weights_dir << "/weights.mira-pass" << (cur_pass < 10 ? "0" : "") << cur_pass << "." << node_id << "-avg.gz";
+		x.init_vector(&dense_weights);
+		Weights::WriteToFile(sa.str(), dense_weights, true, &msga);
+    }
     
     cerr << "Optimization complete.\n";
     return 0;
