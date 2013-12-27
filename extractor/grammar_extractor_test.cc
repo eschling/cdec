@@ -39,12 +39,15 @@ TEST(GrammarExtractorTest, TestAnnotatingWords) {
   vector<Rule> rules;
   vector<string> feature_names;
   Grammar grammar(rules, feature_names);
-  EXPECT_CALL(*factory, GetGrammar(word_ids))
+  unordered_set<int> blacklisted_sentence_ids;
+  shared_ptr<DataArray> source_data_array;
+  EXPECT_CALL(*factory, GetGrammar(word_ids, blacklisted_sentence_ids))
       .WillOnce(Return(grammar));
 
   GrammarExtractor extractor(vocabulary, factory);
   string sentence = "Anna has many many apples .";
-  extractor.GetGrammar(sentence);
+
+  extractor.GetGrammar(sentence, blacklisted_sentence_ids);
 }
 
 } // namespace

@@ -37,6 +37,7 @@ decoder/Makefile.in
 decoder/bin/
 decoder/cdec
 decoder/dict_test
+decoder/sv_test
 decoder/ff_test
 decoder/grammar_test
 decoder/hg_test
@@ -71,6 +72,7 @@ extools/score_grammar
 extools/sg_lexer.cc
 extractor/*_test
 extractor/compile
+extractor/extract
 extractor/run_extractor
 gi/clda/src/clda
 gi/markov_al/ml
@@ -103,6 +105,7 @@ jam-files/bjam
 jam-files/engine/bin.*
 jam-files/engine/bootstrap/
 klm/lm/bin/
+klm/lm/builder/builder
 klm/lm/builder/lmplz
 klm/lm/build_binary
 klm/lm/ngram_query
@@ -162,6 +165,7 @@ training/liblbfgs/bin/
 training/liblbfgs/ll_test
 training/model1
 training/mpi_batch_optimize
+training/mpi_adagrad_optimize
 training/mpi_compute_cllh
 training/mpi_em_optimize
 training/mpi_extract_features
@@ -185,8 +189,10 @@ utils/mfcr_test
 utils/phmt
 utils/reconstruct_weights
 utils/small_vector_test
+utils/sv_test
 utils/ts
 utils/weights_test
+training/crf/mpi_adagrad_optimize
 training/crf/mpi_batch_optimize
 training/crf/mpi_baum_welch
 training/crf/mpi_compute_cllh

@@ -40,7 +40,7 @@ class RuleFactoryTest : public Test {
         .WillRepeatedly(Return(feature_names));
 
     sampler = make_shared<MockSampler>();
-    EXPECT_CALL(*sampler, Sample(_))
+    EXPECT_CALL(*sampler, Sample(_, _))
         .WillRepeatedly(Return(PhraseLocation(0, 1)));
 
     Phrase phrase;
@@ -76,7 +76,8 @@ TEST_F(RuleFactoryTest, TestGetGrammarDifferentWords) {
       .WillRepeatedly(Return(PhraseLocation(0, 1)));
 
   vector<int> word_ids = {2, 3, 4};
-  Grammar grammar = factory->GetGrammar(word_ids);
+  unordered_set<int> blacklisted_sentence_ids;
+  Grammar grammar = factory->GetGrammar(word_ids, blacklisted_sentence_ids);
   EXPECT_EQ(feature_names, grammar.GetFeatureNames());
   EXPECT_EQ(7, grammar.GetRules().size());
 }
@@ -94,7 +95,8 @@ TEST_F(RuleFactoryTest, TestGetGrammarRepeatingWords) {
       .WillRepeatedly(Return(PhraseLocation(0, 1)));
 
   vector<int> word_ids = {2, 3, 4, 2, 3};
-  Grammar grammar = factory->GetGrammar(word_ids);
+  unordered_set<int> blacklisted_sentence_ids;
+  Grammar grammar = factory->GetGrammar(word_ids, blacklisted_sentence_ids);
   EXPECT_EQ(feature_names, grammar.GetFeatureNames());
   EXPECT_EQ(28, grammar.GetRules().size());
 }

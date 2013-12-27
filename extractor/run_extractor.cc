@@ -5,10 +5,10 @@
 #include <string>
 #include <vector>
 
-#include <omp.h>
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
 #include <boost/program_options/variables_map.hpp>
+#include <omp.h>
 
 #include "alignment.h"
 #include "data_array.h"
@@ -28,6 +28,7 @@
 #include "suffix_array.h"
 #include "time_util.h"
 #include "translation_table.h"
+#include "vocabulary.h"
 
 namespace fs = boost::filesystem;
 namespace po = boost::program_options;
@@ -75,7 +76,10 @@ int main(int argc, char** argv) {
     ("max_samples", po::value<int>()->default_value(300),
         "Maximum number of samples")
     ("tight_phrases", po::value<bool>()->default_value(true),
-        "False if phrases may be loose (better, but slower)");
+        "False if phrases may be loose (better, but slower)")
+    ("leave_one_out", po::value<bool>()->zero_tokens(),
+        "do leave-one-out estimation of grammars "
+        "(e.g. for extracting grammars for the training set");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -135,11 +139,14 @@ int main(int argc, char** argv) {
   cerr << "Reading alignment took "
        << GetDuration(start_time, stop_time) << " seconds" << endl;
 
+  shared_ptr<Vocabulary> vocabulary = make_shared<Vocabulary>();
+
   // Constructs an index storing the occurrences in the source data for each
   // frequent collocation.
   start_time = Clock::now();
   cerr << "Precomputing collocations..." << endl;
   shared_ptr<Precomputation> precomputation = make_shared<Precomputation>(
+      vocabulary,
       source_suffix_array,
       vm["frequent"].as<int>(),
       vm["super_frequent"].as<int>(),
@@ -167,8 +174,8 @@ int main(int argc, char** argv) {
        << GetDuration(preprocess_start_time, preprocess_stop_time)
        << " seconds" << endl;
 
-  // Features used to score each grammar rule.
   Clock::time_point extraction_start_time = Clock::now();
+  // Features used to score each grammar rule.
   vector<shared_ptr<Feature>> features = {
       make_shared<TargetGivenSourceCoherent>(),
       make_shared<SampleSourceCount>(),
@@ -187,15 +194,13 @@ int main(int argc, char** argv) {
       alignment,
       precomputation,
       scorer,
+      vocabulary,
       vm["min_gap_size"].as<int>(),
       vm["max_rule_span"].as<int>(),
       vm["max_nonterminals"].as<int>(),
       vm["max_rule_symbols"].as<int>(),
       vm["max_samples"].as<int>(),
       vm["tight_phrases"].as<bool>());
-
-  // Releases extra memory used by the initial precomputation.
-  precomputation.reset();
 
   // Creates the grammars directory if it doesn't exist.
   fs::path grammar_path = vm["grammars"].as<string>();
@@ -212,6 +217,7 @@ int main(int argc, char** argv) {
   }
 
   // Extracts the grammar for each sentence and saves it to a file.
+  bool leave_one_out = vm.count("leave_one_out");
   vector<string> suffixes(sentences.size());
   #pragma omp parallel for schedule(dynamic) num_threads(num_threads)
   for (size_t i = 0; i < sentences.size(); ++i) {
@@ -223,7 +229,12 @@ int main(int argc, char** argv) {
     }
     suffixes[i] = suffix;
 
-    Grammar grammar = extractor.GetGrammar(sentences[i]);
+    unordered_set<int> blacklisted_sentence_ids;
+    if (leave_one_out) {
+      blacklisted_sentence_ids.insert(i);
+    }
+    Grammar grammar = extractor.GetGrammar(
+        sentences[i], blacklisted_sentence_ids);
     ofstream output(GetGrammarFilePath(grammar_path, i).c_str());
     output << grammar;
   }

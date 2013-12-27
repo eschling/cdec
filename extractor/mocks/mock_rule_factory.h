@@ -7,7 +7,9 @@ namespace extractor {
 
 class MockHieroCachingRuleFactory : public HieroCachingRuleFactory {
  public:
-  MOCK_METHOD1(GetGrammar, Grammar(const vector<int>& word_ids));
+  MOCK_METHOD2(GetGrammar, Grammar(
+      const vector<int>& word_ids,
+      const unordered_set<int>& blacklisted_sentence_ids));
 };
 
 } // namespace extractor
